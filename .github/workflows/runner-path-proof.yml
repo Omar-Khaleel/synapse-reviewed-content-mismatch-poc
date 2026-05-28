@@ -1,0 +1,18 @@
+name: Runner path proof
+
+on:
+  workflow_dispatch:
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print runner paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+          echo "HOME=$HOME"
+          mkdir -p "$RUNNER_TEMP/trusted"
+          echo "trusted_realpath=$(realpath "$RUNNER_TEMP/trusted")"
