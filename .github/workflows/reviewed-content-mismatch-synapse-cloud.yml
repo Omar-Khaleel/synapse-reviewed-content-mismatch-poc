@@ -20,7 +20,7 @@ jobs:
 
           mkdir -p "$RUNNER_TEMP/trusted"
 
-          cat > "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" <<'JSON'
+          cat > "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" <<JSON
           {
             "\$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
             "contentVersion": "1.0.0.0",
@@ -115,17 +115,39 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy Synapse artifact using reviewed repo path
-        uses: Azure/Synapse-workspace-deployment@master
-        with:
-          TargetWorkspaceName: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
-          TemplateFile: synapse/TemplateForWorkspace.json
-          ParametersFile: synapse/TemplateParametersForWorkspace.json
-          environment: Azure Public
-          resourceGroup: ${{ secrets.SYNAPSE_RESOURCE_GROUP }}
-          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          DeleteArtifactsNotInTemplate: false
-          managedIdentity: false
+      - name: Deploy Synapse artifact using built Synapse action source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone https://github.com/Azure/Synapse-workspace-deployment.git /tmp/Synapse-workspace-deployment
+
+          cd /tmp/Synapse-workspace-deployment/build_and_deploy
+
+          npm install
+          npm run build
+
+          export INPUT_TARGETWORKSPACENAME="${{ secrets.SYNAPSE_WORKSPACE_NAME }}"
+          export INPUT_TEMPLATEFILE="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
+          export INPUT_PARAMETERSFILE="$GITHUB_WORKSPACE/synapse/TemplateParametersForWorkspace.json"
+          export INPUT_OVERRIDEARMPARAMETERS=""
+          export INPUT_ENVIRONMENT="Azure Public"
+          export INPUT_RESOURCEGROUP="${{ secrets.SYNAPSE_RESOURCE_GROUP }}"
+          export INPUT_SUBSCRIPTIONID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          export INPUT_TENANTID="${{ secrets.AZURE_TENANT_ID }}"
+          export INPUT_DELETEARTIFACTSNOTINTEMPLATE="false"
+          export INPUT_MANAGEDIDENTITY="false"
+          export INPUT_DEPLOYMANAGEDPRIVATEENDPOINT="false"
+          export INPUT_FAILONMISSINGOVERRIDES="false"
+          export INPUT_OPERATION="deploy"
+
+          echo "[ACTION_SOURCE_DEPLOY]"
+          echo "TemplateFile=$INPUT_TEMPLATEFILE"
+          echo "ParametersFile=$INPUT_PARAMETERSFILE"
+          echo "TemplateFileRealpath=$(realpath "$INPUT_TEMPLATEFILE")"
+          echo "ParametersFileRealpath=$(realpath "$INPUT_PARAMETERSFILE")"
+
+          node entrypoint.js
 
       - name: Verify cloud-side Synapse artifact contains external sentinel
         shell: bash
