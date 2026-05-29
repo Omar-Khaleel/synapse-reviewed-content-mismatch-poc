@@ -54,9 +54,9 @@ jobs:
           }
           JSON
 
-          cat > "$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json" <<JSON
+          cat > "$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json" <<'JSON'
           {
-            "\$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
             "contentVersion": "1.0.0.0",
             "parameters": {
               "workspaceName": {
@@ -68,7 +68,9 @@ jobs:
 
           echo "[TRUSTED_GENERATED_TARGET]"
           echo "trusted_template_path=$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
+          echo "trusted_parameters_path=$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json"
           echo "trusted_template_sha256=$(sha256sum "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" | awk '{print $1}')"
+          echo "trusted_parameters_sha256=$(sha256sum "$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json" | awk '{print $1}')"
           grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
 
       - name: Checkout reviewed repository
@@ -83,30 +85,50 @@ jobs:
           echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           echo "RUNNER_TEMP=$RUNNER_TEMP"
 
-          echo "[REVIEWED_REPO_OBJECT]"
+          echo "[REVIEWED_REPO_OBJECT_TEMPLATE]"
           git ls-files -s synapse/TemplateForWorkspace.json
-          echo "git_symlink_target=$(git cat-file -p :synapse/TemplateForWorkspace.json)"
-          echo "git_symlink_blob_sha=$(git ls-files -s synapse/TemplateForWorkspace.json | awk '{print $2}')"
+          echo "git_symlink_target_template=$(git cat-file -p :synapse/TemplateForWorkspace.json)"
+          echo "git_symlink_blob_sha_template=$(git ls-files -s synapse/TemplateForWorkspace.json | awk '{print $2}')"
 
-          REQUESTED="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
-          REAL="$(realpath "$REQUESTED")"
+          echo "[REVIEWED_REPO_OBJECT_PARAMETERS]"
+          git ls-files -s synapse/TemplateParametersForWorkspace.json
+          echo "git_symlink_target_parameters=$(git cat-file -p :synapse/TemplateParametersForWorkspace.json)"
+          echo "git_symlink_blob_sha_parameters=$(git ls-files -s synapse/TemplateParametersForWorkspace.json | awk '{print $2}')"
+
+          TEMPLATE_REQUESTED="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
+          PARAMETERS_REQUESTED="$GITHUB_WORKSPACE/synapse/TemplateParametersForWorkspace.json"
+
+          TEMPLATE_REAL="$(realpath "$TEMPLATE_REQUESTED")"
+          PARAMETERS_REAL="$(realpath "$PARAMETERS_REQUESTED")"
 
           echo "[REALPATH]"
-          echo "requestedPath=$REQUESTED"
-          echo "realpath=$REAL"
+          echo "templateRequestedPath=$TEMPLATE_REQUESTED"
+          echo "templateRealpath=$TEMPLATE_REAL"
+          echo "parametersRequestedPath=$PARAMETERS_REQUESTED"
+          echo "parametersRealpath=$PARAMETERS_REAL"
 
-          case "$REAL" in
+          case "$TEMPLATE_REAL" in
             "$GITHUB_WORKSPACE"/*)
-              echo "realpathWithinWorkspace=true"
+              echo "templateRealpathWithinWorkspace=true"
               ;;
             *)
-              echo "realpathWithinWorkspace=false"
+              echo "templateRealpathWithinWorkspace=false"
+              ;;
+          esac
+
+          case "$PARAMETERS_REAL" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "parametersRealpathWithinWorkspace=true"
+              ;;
+            *)
+              echo "parametersRealpathWithinWorkspace=false"
               ;;
           esac
 
           echo "[HASHES]"
-          echo "realpath_target_sha256=$(sha256sum "$REAL" | awk '{print $1}')"
-          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$REAL"
+          echo "template_realpath_target_sha256=$(sha256sum "$TEMPLATE_REAL" | awk '{print $1}')"
+          echo "parameters_realpath_target_sha256=$(sha256sum "$PARAMETERS_REAL" | awk '{print $1}')"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$TEMPLATE_REAL"
 
       - name: Azure login using protected environment OIDC
         uses: azure/login@v2
@@ -120,6 +142,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          rm -rf /tmp/Synapse-workspace-deployment
           git clone https://github.com/Azure/Synapse-workspace-deployment.git /tmp/Synapse-workspace-deployment
 
           cd /tmp/Synapse-workspace-deployment/build_and_deploy
@@ -144,24 +167,32 @@ jobs:
           echo "[ACTION_SOURCE_DEPLOY]"
           echo "TemplateFile=$INPUT_TEMPLATEFILE"
           echo "ParametersFile=$INPUT_PARAMETERSFILE"
-          realpath "$INPUT_TEMPLATEFILE"
-          realpath "$INPUT_PARAMETERSFILE"
+          echo "TemplateFileRealpath=$(realpath "$INPUT_TEMPLATEFILE")"
+          echo "ParametersFileRealpath=$(realpath "$INPUT_PARAMETERSFILE")"
 
-          echo "[BUILD_OUTPUT_FILES]"
-          find . -maxdepth 5 -type f -name "*.js" | sort
+          echo "[ROOT_BUILD_OUTPUT]"
+          find . -maxdepth 3 \
+            -type f \
+            -name "*.js" \
+            -not -path "./node_modules/*" \
+            | sort
 
-          ENTRYPOINT="$(find . -type f -name "entrypoint.js" | head -n 1 || true)"
+          ENTRYPOINT=""
 
-          if [ -z "$ENTRYPOINT" ]; then
-            ENTRYPOINT="$(find . -type f -path "*/dist/index.js" | head -n 1 || true)"
+          if [ -f "./entrypoint.js" ]; then
+            ENTRYPOINT="./entrypoint.js"
+          elif [ -f "./dist/index.js" ]; then
+            ENTRYPOINT="./dist/index.js"
+          elif [ -f "./lib/entrypoint.js" ]; then
+            ENTRYPOINT="./lib/entrypoint.js"
+          elif [ -f "./build/entrypoint.js" ]; then
+            ENTRYPOINT="./build/entrypoint.js"
           fi
 
           if [ -z "$ENTRYPOINT" ]; then
-            ENTRYPOINT="$(find . -type f -name "index.js" | head -n 1 || true)"
-          fi
-
-          if [ -z "$ENTRYPOINT" ]; then
-            echo "No runnable action entrypoint was found after build"
+            echo "No valid action entrypoint found outside node_modules"
+            echo "Available non-node_modules JS files:"
+            find . -type f -name "*.js" -not -path "./node_modules/*" | sort
             exit 1
           fi
 
@@ -177,11 +208,18 @@ jobs:
 
           TOKEN="$(az account get-access-token --resource https://dev.azuresynapse.net --query accessToken -o tsv)"
 
-          curl -sS \
+          STATUS="$(curl -sS -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             "https://${{ secrets.SYNAPSE_WORKSPACE_NAME }}.dev.azuresynapse.net/notebooks/review_bypass_external_payload?api-version=2020-12-01" \
-            > synapse_artifact.json
+            -o synapse_artifact.json)"
+
+          echo "[CLOUD_RESPONSE_STATUS]"
+          echo "$STATUS"
+
+          echo "[CLOUD_RESPONSE_BODY_PREVIEW]"
+          head -c 4000 synapse_artifact.json || true
+          echo
 
           echo "[CLOUD_PROOF]"
           grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" synapse_artifact.json
