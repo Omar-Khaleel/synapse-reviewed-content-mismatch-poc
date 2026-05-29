@@ -170,36 +170,10 @@ jobs:
           echo "TemplateFileRealpath=$(realpath "$INPUT_TEMPLATEFILE")"
           echo "ParametersFileRealpath=$(realpath "$INPUT_PARAMETERSFILE")"
 
-          echo "[ROOT_BUILD_OUTPUT]"
-          find . -maxdepth 3 \
-            -type f \
-            -name "*.js" \
-            -not -path "./node_modules/*" \
-            | sort
-
-          ENTRYPOINT=""
-
-          if [ -f "./entrypoint.js" ]; then
-            ENTRYPOINT="./entrypoint.js"
-          elif [ -f "./dist/index.js" ]; then
-            ENTRYPOINT="./dist/index.js"
-          elif [ -f "./lib/entrypoint.js" ]; then
-            ENTRYPOINT="./lib/entrypoint.js"
-          elif [ -f "./build/entrypoint.js" ]; then
-            ENTRYPOINT="./build/entrypoint.js"
-          fi
-
-          if [ -z "$ENTRYPOINT" ]; then
-            echo "No valid action entrypoint found outside node_modules"
-            echo "Available non-node_modules JS files:"
-            find . -type f -name "*.js" -not -path "./node_modules/*" | sort
-            exit 1
-          fi
-
           echo "[ENTRYPOINT]"
-          echo "$ENTRYPOINT"
+          echo "./main.js"
 
-          node "$ENTRYPOINT"
+          node ./main.js
 
       - name: Verify cloud-side Synapse artifact contains external sentinel
         shell: bash
