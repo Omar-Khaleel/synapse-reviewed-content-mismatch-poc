@@ -1,0 +1,146 @@
+name: Reviewed content mismatch Synapse cloud proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Generate trusted deployment artifact outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/trusted"
+
+          cat > "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" <<'JSON'
+          {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+              "workspaceName": {
+                "type": "string"
+              }
+            },
+            "variables": {},
+            "resources": [
+              {
+                "name": "[concat(parameters('workspaceName'), '/review_bypass_external_payload')]",
+                "type": "Microsoft.Synapse/workspaces/notebooks",
+                "apiVersion": "2021-06-01",
+                "dependsOn": [],
+                "properties": {
+                  "folder": {
+                    "name": "msrc-reviewed-content-mismatch"
+                  },
+                  "nbformat": 4,
+                  "nbformat_minor": 2,
+                  "bigDataPool": null,
+                  "sessionProperties": {},
+                  "metadata": {
+                    "description": "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL"
+                  },
+                  "cells": []
+                }
+              }
+            ]
+          }
+          JSON
+
+          cat > "$RUNNER_TEMP/trusted/TemplateParametersForWorkspace.json" <<JSON
+          {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+              "workspaceName": {
+                "value": "${{ secrets.SYNAPSE_WORKSPACE_NAME }}"
+              }
+            }
+          }
+          JSON
+
+          echo "[TRUSTED_GENERATED_TARGET]"
+          echo "trusted_template_path=$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
+          echo "trusted_template_sha256=$(sha256sum "$RUNNER_TEMP/trusted/TemplateForWorkspace.json" | awk '{print $1}')"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$RUNNER_TEMP/trusted/TemplateForWorkspace.json"
+
+      - name: Checkout reviewed repository
+        uses: actions/checkout@v4
+
+      - name: Prove reviewed object differs from consumed realpath bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[PATHS]"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+
+          echo "[REVIEWED_REPO_OBJECT]"
+          git ls-files -s synapse/TemplateForWorkspace.json
+          echo "git_symlink_target=$(git cat-file -p :synapse/TemplateForWorkspace.json)"
+          echo "git_symlink_blob_sha=$(git ls-files -s synapse/TemplateForWorkspace.json | awk '{print $2}')"
+
+          REQUESTED="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
+          REAL="$(realpath "$REQUESTED")"
+
+          echo "[REALPATH]"
+          echo "requestedPath=$REQUESTED"
+          echo "realpath=$REAL"
+
+          case "$REAL" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "realpathWithinWorkspace=true"
+              ;;
+            *)
+              echo "realpathWithinWorkspace=false"
+              ;;
+          esac
+
+          echo "[HASHES]"
+          echo "realpath_target_sha256=$(sha256sum "$REAL" | awk '{print $1}')"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" "$REAL"
+
+      - name: Azure login using protected environment OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Synapse artifact using reviewed repo path
+        uses: Azure/Synapse-workspace-deployment@master
+        with:
+          TargetWorkspaceName: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
+          TemplateFile: synapse/TemplateForWorkspace.json
+          ParametersFile: synapse/TemplateParametersForWorkspace.json
+          environment: Azure Public
+          resourceGroup: ${{ secrets.SYNAPSE_RESOURCE_GROUP }}
+          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          DeleteArtifactsNotInTemplate: false
+          managedIdentity: false
+
+      - name: Verify cloud-side Synapse artifact contains external sentinel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOKEN="$(az account get-access-token --resource https://dev.azuresynapse.net --query accessToken -o tsv)"
+
+          curl -sS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://${{ secrets.SYNAPSE_WORKSPACE_NAME }}.dev.azuresynapse.net/notebooks/review_bypass_external_payload?api-version=2020-12-01" \
+            > synapse_artifact.json
+
+          echo "[CLOUD_PROOF]"
+          grep -n "MSRC_REVIEWED_CONTENT_MISMATCH_EXTERNAL_SENTINEL" synapse_artifact.json
+          echo "cloud_artifact_contains_external_sentinel=true"
+          echo "cloud_artifact_sha256=$(sha256sum synapse_artifact.json | awk '{print $1}')"
