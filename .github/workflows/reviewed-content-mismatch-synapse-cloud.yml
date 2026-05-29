@@ -115,7 +115,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy Synapse artifact using built Synapse action source
+            - name: Deploy Synapse artifact using built Synapse action source
         shell: bash
         run: |
           set -euo pipefail
@@ -147,7 +147,26 @@ jobs:
           echo "TemplateFileRealpath=$(realpath "$INPUT_TEMPLATEFILE")"
           echo "ParametersFileRealpath=$(realpath "$INPUT_PARAMETERSFILE")"
 
-          node entrypoint.js
+          echo "[BUILD_OUTPUT_FILES]"
+          find . -maxdepth 4 -type f \( -name "entrypoint.js" -o -name "index.js" -o -name "*.js" \) | sort
+
+          ENTRYPOINT="$(find . -type f -name "entrypoint.js" | head -n 1)"
+
+          if [ -z "$ENTRYPOINT" ]; then
+            ENTRYPOINT="$(find . -type f -path "*/dist/index.js" | head -n 1)"
+          fi
+
+          if [ -z "$ENTRYPOINT" ]; then
+            ENTRYPOINT="$(find . -type f -name "index.js" | head -n 1)"
+          fi
+
+          if [ -z "$ENTRYPOINT" ]; then
+            echo "No runnable action entrypoint was found after build"
+            exit 1
+          fi
+
+          echo "Using entrypoint: $ENTRYPOINT"
+          node "$ENTRYPOINT"
 
       - name: Verify cloud-side Synapse artifact contains external sentinel
         shell: bash
