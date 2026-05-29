@@ -149,7 +149,9 @@ jobs:
 
           npm install
           npm run build
-
+          
+          export INPUT_CLIENTID="${{ secrets.AZURE_CLIENT_ID }}"
+          export INPUT_CLIENTSECRET="${{ secrets.AZURE_CLIENT_SECRET }}"
           export INPUT_TARGETWORKSPACENAME="${{ secrets.SYNAPSE_WORKSPACE_NAME }}"
           export INPUT_TEMPLATEFILE="$GITHUB_WORKSPACE/synapse/TemplateForWorkspace.json"
           export INPUT_PARAMETERSFILE="$GITHUB_WORKSPACE/synapse/TemplateParametersForWorkspace.json"
